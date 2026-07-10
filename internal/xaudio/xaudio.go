@@ -1,7 +1,7 @@
 package xaudio
 
 /*
-#cgo windows LDFLAGS: -lxaudio2_9 -lx3daudio
+#cgo windows LDFLAGS: -lxaudio2_9 -lx3daudio -lole32
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -16,6 +16,10 @@ typedef struct {
 
 int sa_xaudio_engine_create(SA_XAudioEngine** out, char* error, int error_size);
 void sa_xaudio_engine_destroy(SA_XAudioEngine* engine);
+int sa_xaudio_thread_initialize(char* error, int error_size);
+void sa_xaudio_thread_uninitialize(void);
+int sa_xaudio_engine_critical_error(SA_XAudioEngine* engine, char* error, int error_size);
+const char* sa_xaudio_current_stage(void);
 int sa_xaudio_voice_create(SA_XAudioEngine* engine, int sample_rate, int channels, SA_XAudioVoice** out, char* error, int error_size);
 int sa_xaudio_voice_submit(SA_XAudioVoice* voice, void* data, int byte_count, char* error, int error_size);
 int sa_xaudio_voice_set_volume(SA_XAudioVoice* voice, float volume, char* error, int error_size);
@@ -75,6 +79,29 @@ func CreateEngine() (*Engine, error) {
 	return &Engine{ptr: ptr}, nil
 }
 
+func InitializeThread() error {
+	var errbuf [512]C.char
+
+	if C.sa_xaudio_thread_initialize(&errbuf[0], C.int(len(errbuf))) == 0 {
+		return errors.New(errorString(&errbuf[0]))
+	}
+
+	return nil
+}
+
+func UninitializeThread() {
+	C.sa_xaudio_thread_uninitialize()
+}
+
+func CurrentStage() string {
+	stage := C.sa_xaudio_current_stage()
+	if stage == nil {
+		return ""
+	}
+
+	return C.GoString(stage)
+}
+
 func (engine *Engine) Destroy() {
 	if engine == nil || engine.ptr == nil {
 		return
@@ -100,6 +127,20 @@ func (engine *Engine) CreateVoice(sampleRate int, channels int) (*Voice, error) 
 	}
 
 	return &Voice{ptr: ptr}, nil
+}
+
+func (engine *Engine) CriticalError() error {
+	if engine == nil || engine.ptr == nil {
+		return nil
+	}
+
+	var errbuf [512]C.char
+
+	if C.sa_xaudio_engine_critical_error(engine.ptr, &errbuf[0], C.int(len(errbuf))) == 0 {
+		return nil
+	}
+
+	return errors.New(errorString(&errbuf[0]))
 }
 
 func (voice *Voice) Submit(buffer unsafe.Pointer, byteCount int) error {

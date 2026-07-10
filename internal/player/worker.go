@@ -2,6 +2,7 @@ package player
 
 import (
 	"fmt"
+	goruntime "runtime"
 	"time"
 
 	"darktide-simple-audio-runtime/internal/xaudio"
@@ -34,15 +35,46 @@ type commandResult struct {
 	error error
 }
 
-func (player *Player) loop(engine *xaudio.Engine, commands <-chan command, events chan Event, done chan<- struct{}) {
+func (player *Player) loop(commands <-chan command, events chan Event, done chan<- struct{}, started chan<- error) {
 	defer close(done)
-	defer engine.Destroy()
+
+	goruntime.LockOSThread()
+	defer goruntime.UnlockOSThread()
+
+	if err := xaudio.InitializeThread(); err != nil {
+		started <- err
+		return
+	}
+	defer xaudio.UninitializeThread()
+
+	engine, err := xaudio.CreateEngine()
+	if err != nil {
+		started <- err
+		return
+	}
+	started <- nil
+
+	defer func() {
+		if engine != nil {
+			engine.Destroy()
+		}
+	}()
 
 	activeFiles := map[int]*filePlayback{}
 
 	for {
 		if len(activeFiles) == 0 {
 			cmd := <-commands
+			if cmd.kind == commandPlay {
+				engine, err = player.recoverCriticalError(engine, activeFiles, events)
+				if err != nil {
+					if cmd.result != nil {
+						cmd.result <- commandResult{error: err}
+					}
+					continue
+				}
+			}
+
 			if player.handleCommand(cmd, activeFiles, engine) {
 				return
 			}
@@ -50,13 +82,39 @@ func (player *Player) loop(engine *xaudio.Engine, commands <-chan command, event
 			continue
 		}
 
-		if player.drainCommands(commands, activeFiles, engine) {
+		engine, err = player.recoverCriticalError(engine, activeFiles, events)
+		if err != nil {
+			continue
+		}
+
+		if len(activeFiles) == 0 {
+			continue
+		}
+
+		var exit bool
+		engine, exit = player.drainCommands(commands, activeFiles, engine, events)
+		if exit {
 			return
 		}
+
+		if len(activeFiles) == 0 {
+			continue
+		}
+
 		player.updateFilePlaybacks(activeFiles, events)
 
 		select {
 		case cmd := <-commands:
+			if cmd.kind != commandShutdown {
+				engine, err = player.recoverCriticalError(engine, activeFiles, events)
+				if err != nil {
+					if cmd.result != nil {
+						cmd.result <- commandResult{error: err}
+					}
+					continue
+				}
+			}
+
 			if player.handleCommand(cmd, activeFiles, engine) {
 				return
 			}
@@ -65,15 +123,26 @@ func (player *Player) loop(engine *xaudio.Engine, commands <-chan command, event
 	}
 }
 
-func (player *Player) drainCommands(commands <-chan command, activeFiles map[int]*filePlayback, engine *xaudio.Engine) bool {
+func (player *Player) drainCommands(commands <-chan command, activeFiles map[int]*filePlayback, engine *xaudio.Engine, events chan Event) (*xaudio.Engine, bool) {
 	for {
 		select {
 		case cmd := <-commands:
+			if cmd.kind != commandShutdown {
+				var err error
+				engine, err = player.recoverCriticalError(engine, activeFiles, events)
+				if err != nil {
+					if cmd.result != nil {
+						cmd.result <- commandResult{error: err}
+					}
+					return engine, false
+				}
+			}
+
 			if player.handleCommand(cmd, activeFiles, engine) {
-				return true
+				return engine, true
 			}
 		default:
-			return false
+			return engine, false
 		}
 	}
 }
@@ -150,6 +219,39 @@ func (player *Player) updateFilePlaybacks(activeFiles map[int]*filePlayback, eve
 			player.pushEvent(events, Event{Type: EventFinished, PlayID: playID})
 		}
 	}
+}
+
+func (player *Player) recoverCriticalError(engine *xaudio.Engine, activeFiles map[int]*filePlayback, events chan Event) (*xaudio.Engine, error) {
+	if engine == nil {
+		newEngine, err := xaudio.CreateEngine()
+		if err != nil {
+			return nil, fmt.Errorf("failed to recreate XAudio2 engine: %w", err)
+		}
+
+		return newEngine, nil
+	}
+
+	criticalError := engine.CriticalError()
+	if criticalError == nil {
+		return engine, nil
+	}
+
+	for playID, activeFile := range activeFiles {
+		activeFile.close()
+		delete(activeFiles, playID)
+		player.unmarkActive(playID)
+		player.pushEvent(events, Event{Type: EventError, PlayID: playID, Message: criticalError.Error()})
+	}
+
+	engine.Destroy()
+
+	newEngine, err := xaudio.CreateEngine()
+	if err != nil {
+		recoveryError := fmt.Errorf("%s; failed to recreate XAudio2 engine: %w", criticalError.Error(), err)
+		return nil, recoveryError
+	}
+
+	return newEngine, nil
 }
 
 func (player *Player) closeFilePlaybacks(activeFiles map[int]*filePlayback) {

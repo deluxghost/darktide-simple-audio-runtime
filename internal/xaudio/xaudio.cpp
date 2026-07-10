@@ -1,13 +1,17 @@
 #include <stdint.h>
+#include <new>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <windows.h>
+#include <objbase.h>
 #include <xaudio2.h>
 
 extern "C" {
 #include <x3daudio.h>
 }
+
+class SA_XAudioEngineCallback;
 
 extern "C" {
 
@@ -17,6 +21,9 @@ struct SA_XAudioEngine {
 	X3DAUDIO_HANDLE x3d_handle;
 	UINT32 output_channels;
 	DWORD channel_mask;
+	SA_XAudioEngineCallback* callback;
+	LONG critical_error;
+	LONG critical_error_set;
 };
 
 struct SA_XAudioVoice {
@@ -32,6 +39,62 @@ struct SA_XAudioVector {
 	float y;
 	float z;
 };
+
+}
+
+class SA_XAudioEngineCallback final : public IXAudio2EngineCallback {
+public:
+	explicit SA_XAudioEngineCallback(SA_XAudioEngine* owner) : owner(owner) {}
+
+	void STDMETHODCALLTYPE OnProcessingPassStart() override {}
+	void STDMETHODCALLTYPE OnProcessingPassEnd() override {}
+
+	void STDMETHODCALLTYPE OnCriticalError(HRESULT error) override {
+		if (owner == NULL) {
+			return;
+		}
+
+		owner->critical_error = (LONG)error;
+		InterlockedExchange(&owner->critical_error_set, 1);
+	}
+
+private:
+	SA_XAudioEngine* owner;
+};
+
+extern "C" {
+
+enum SA_XAudioStage {
+	SA_XAUDIO_STAGE_IDLE = 0,
+	SA_XAUDIO_STAGE_INITIALIZING_COM,
+	SA_XAUDIO_STAGE_CREATING_ENGINE,
+	SA_XAUDIO_STAGE_CREATING_MASTERING_VOICE,
+	SA_XAUDIO_STAGE_INITIALIZING_X3DAUDIO,
+	SA_XAUDIO_STAGE_READY,
+};
+
+static volatile LONG sa_xaudio_stage = SA_XAUDIO_STAGE_IDLE;
+
+static void sa_xaudio_set_stage(SA_XAudioStage stage) {
+	InterlockedExchange(&sa_xaudio_stage, (LONG)stage);
+}
+
+const char* sa_xaudio_current_stage(void) {
+	switch ((SA_XAudioStage)InterlockedCompareExchange(&sa_xaudio_stage, 0, 0)) {
+	case SA_XAUDIO_STAGE_INITIALIZING_COM:
+		return "initializing_com";
+	case SA_XAUDIO_STAGE_CREATING_ENGINE:
+		return "creating_xaudio_engine";
+	case SA_XAUDIO_STAGE_CREATING_MASTERING_VOICE:
+		return "creating_mastering_voice";
+	case SA_XAUDIO_STAGE_INITIALIZING_X3DAUDIO:
+		return "initializing_x3daudio";
+	case SA_XAUDIO_STAGE_READY:
+		return "ready";
+	default:
+		return "idle";
+	}
+}
 
 static void sa_xaudio_set_error(char* buffer, int buffer_size, const char* message) {
 	if (buffer == NULL || buffer_size <= 0) {
@@ -78,6 +141,23 @@ static X3DAUDIO_VECTOR sa_xaudio_vector(SA_XAudioVector value) {
 	return vector;
 }
 
+int sa_xaudio_thread_initialize(char* error, int error_size) {
+	sa_xaudio_set_stage(SA_XAUDIO_STAGE_INITIALIZING_COM);
+
+	HRESULT result = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+	if (FAILED(result)) {
+		sa_xaudio_hresult_error(error, error_size, "CoInitializeEx", result);
+		return 0;
+	}
+
+	return 1;
+}
+
+void sa_xaudio_thread_uninitialize(void) {
+	CoUninitialize();
+	sa_xaudio_set_stage(SA_XAUDIO_STAGE_IDLE);
+}
+
 int sa_xaudio_engine_create(SA_XAudioEngine** out, char* error, int error_size) {
 	if (out == NULL) {
 		sa_xaudio_set_error(error, error_size, "XAudio2 engine output pointer is null");
@@ -92,6 +172,8 @@ int sa_xaudio_engine_create(SA_XAudioEngine** out, char* error, int error_size) 
 		return 0;
 	}
 
+	sa_xaudio_set_stage(SA_XAUDIO_STAGE_CREATING_ENGINE);
+
 	HRESULT result = XAudio2Create(&engine->engine, 0, XAUDIO2_DEFAULT_PROCESSOR);
 	if (FAILED(result)) {
 		free(engine);
@@ -99,9 +181,30 @@ int sa_xaudio_engine_create(SA_XAudioEngine** out, char* error, int error_size) 
 		return 0;
 	}
 
-	result = engine->engine->CreateMasteringVoice(&engine->mastering_voice);
+	engine->callback = new (std::nothrow) SA_XAudioEngineCallback(engine);
+	if (engine->callback == NULL) {
+		engine->engine->Release();
+		free(engine);
+		sa_xaudio_set_error(error, error_size, "Failed to allocate XAudio2 engine callback");
+		return 0;
+	}
+
+	result = engine->engine->RegisterForCallbacks(engine->callback);
 	if (FAILED(result)) {
 		engine->engine->Release();
+		delete engine->callback;
+		free(engine);
+		sa_xaudio_hresult_error(error, error_size, "RegisterForCallbacks", result);
+		return 0;
+	}
+
+	sa_xaudio_set_stage(SA_XAUDIO_STAGE_CREATING_MASTERING_VOICE);
+
+	result = engine->engine->CreateMasteringVoice(&engine->mastering_voice);
+	if (FAILED(result)) {
+		engine->engine->UnregisterForCallbacks(engine->callback);
+		engine->engine->Release();
+		delete engine->callback;
 		free(engine);
 		sa_xaudio_hresult_error(error, error_size, "CreateMasteringVoice", result);
 		return 0;
@@ -113,7 +216,9 @@ int sa_xaudio_engine_create(SA_XAudioEngine** out, char* error, int error_size) 
 	engine->output_channels = details.InputChannels;
 	if (engine->output_channels == 0) {
 		engine->mastering_voice->DestroyVoice();
+		engine->engine->UnregisterForCallbacks(engine->callback);
 		engine->engine->Release();
+		delete engine->callback;
 		free(engine);
 		sa_xaudio_set_error(error, error_size, "XAudio2 mastering voice has no output channels");
 		return 0;
@@ -124,15 +229,20 @@ int sa_xaudio_engine_create(SA_XAudioEngine** out, char* error, int error_size) 
 		engine->channel_mask = sa_xaudio_fallback_channel_mask(engine->output_channels);
 	}
 
+	sa_xaudio_set_stage(SA_XAUDIO_STAGE_INITIALIZING_X3DAUDIO);
+
 	result = X3DAudioInitialize(engine->channel_mask, X3DAUDIO_SPEED_OF_SOUND, engine->x3d_handle);
 	if (FAILED(result)) {
 		engine->mastering_voice->DestroyVoice();
+		engine->engine->UnregisterForCallbacks(engine->callback);
 		engine->engine->Release();
+		delete engine->callback;
 		free(engine);
 		sa_xaudio_hresult_error(error, error_size, "X3DAudioInitialize", result);
 		return 0;
 	}
 
+	sa_xaudio_set_stage(SA_XAUDIO_STAGE_READY);
 	*out = engine;
 	return 1;
 }
@@ -147,12 +257,34 @@ void sa_xaudio_engine_destroy(SA_XAudioEngine* engine) {
 		engine->mastering_voice = NULL;
 	}
 
+	if (engine->engine != NULL && engine->callback != NULL) {
+		engine->engine->UnregisterForCallbacks(engine->callback);
+	}
+
 	if (engine->engine != NULL) {
 		engine->engine->Release();
 		engine->engine = NULL;
 	}
 
+	if (engine->callback != NULL) {
+		delete engine->callback;
+		engine->callback = NULL;
+	}
+
 	free(engine);
+}
+
+int sa_xaudio_engine_critical_error(SA_XAudioEngine* engine, char* error, int error_size) {
+	if (engine == NULL) {
+		return 0;
+	}
+
+	if (InterlockedCompareExchange(&engine->critical_error_set, 0, 0) == 0) {
+		return 0;
+	}
+
+	sa_xaudio_hresult_error(error, error_size, "XAudio2 critical error", (HRESULT)engine->critical_error);
+	return 1;
 }
 
 int sa_xaudio_voice_create(SA_XAudioEngine* engine, int sample_rate, int channels, SA_XAudioVoice** out, char* error, int error_size) {

@@ -6,13 +6,35 @@ package main
 import "C"
 
 import (
+	"sync"
 	"unsafe"
 
 	"darktide-simple-audio-runtime/internal/ffmpeg"
 	"darktide-simple-audio-runtime/internal/player"
+	"darktide-simple-audio-runtime/internal/xaudio"
 )
 
 var runtimePlayer = player.New()
+
+const (
+	runtimeStatusUninitialized = 0
+	runtimeStatusInitializing  = 1
+	runtimeStatusReady         = 2
+	runtimeStatusFailed        = 3
+	runtimeStatusShuttingDown  = 4
+)
+
+type runtimeInitializationState struct {
+	mu     sync.Mutex
+	status int
+	stage  string
+	err    string
+}
+
+var runtimeInitialization = runtimeInitializationState{
+	status: runtimeStatusUninitialized,
+	stage:  "uninitialized",
+}
 
 func main() {}
 
@@ -48,17 +70,145 @@ func fail(buffer *C.char, bufferSize C.int, err error) C.int {
 	return 0
 }
 
-//export SimpleAudioRuntime_Initialize
-func SimpleAudioRuntime_Initialize(errorBuffer *C.char, errorBufferSize C.int) C.int {
-	if err := ffmpeg.Initialize(); err != nil {
-		return fail(errorBuffer, errorBufferSize, err)
+func setInitializationStage(stage string) {
+	runtimeInitialization.mu.Lock()
+	if runtimeInitialization.status == runtimeStatusInitializing {
+		runtimeInitialization.stage = stage
+	}
+	runtimeInitialization.mu.Unlock()
+}
+
+func failInitialization(err error) {
+	runtimeInitialization.mu.Lock()
+	if runtimeInitialization.status == runtimeStatusShuttingDown {
+		runtimeInitialization.status = runtimeStatusUninitialized
+		runtimeInitialization.stage = "uninitialized"
+		runtimeInitialization.err = ""
+		runtimeInitialization.mu.Unlock()
+		return
 	}
 
+	runtimeInitialization.status = runtimeStatusFailed
+	runtimeInitialization.stage = "failed"
+	if err != nil {
+		runtimeInitialization.err = err.Error()
+	} else {
+		runtimeInitialization.err = "unknown error"
+	}
+	runtimeInitialization.mu.Unlock()
+}
+
+func finishInitialization() {
+	runtimeInitialization.mu.Lock()
+	if runtimeInitialization.status == runtimeStatusShuttingDown {
+		runtimeInitialization.mu.Unlock()
+		runtimePlayer.Shutdown()
+
+		runtimeInitialization.mu.Lock()
+		runtimeInitialization.status = runtimeStatusUninitialized
+		runtimeInitialization.stage = "uninitialized"
+		runtimeInitialization.err = ""
+		runtimeInitialization.mu.Unlock()
+		return
+	}
+
+	runtimeInitialization.status = runtimeStatusReady
+	runtimeInitialization.stage = "ready"
+	runtimeInitialization.err = ""
+	runtimeInitialization.mu.Unlock()
+}
+
+func initializeRuntime() {
+	setInitializationStage("loading_ffmpeg")
+	if err := ffmpeg.Initialize(); err != nil {
+		failInitialization(err)
+		return
+	}
+
+	setInitializationStage("creating_xaudio_engine")
 	if err := runtimePlayer.Start(); err != nil {
-		return fail(errorBuffer, errorBufferSize, err)
+		failInitialization(err)
+		return
+	}
+
+	finishInitialization()
+}
+
+func startInitialize() bool {
+	runtimeInitialization.mu.Lock()
+	defer runtimeInitialization.mu.Unlock()
+
+	switch runtimeInitialization.status {
+	case runtimeStatusInitializing, runtimeStatusReady:
+		return true
+	case runtimeStatusShuttingDown:
+		return false
+	}
+
+	runtimeInitialization.status = runtimeStatusInitializing
+	runtimeInitialization.stage = "starting"
+	runtimeInitialization.err = ""
+
+	go initializeRuntime()
+
+	return true
+}
+
+func initializationStatus() int {
+	runtimeInitialization.mu.Lock()
+	status := runtimeInitialization.status
+	runtimeInitialization.mu.Unlock()
+
+	return status
+}
+
+func initializationStage() string {
+	runtimeInitialization.mu.Lock()
+	status := runtimeInitialization.status
+	stage := runtimeInitialization.stage
+	runtimeInitialization.mu.Unlock()
+
+	if status == runtimeStatusInitializing && stage == "creating_xaudio_engine" {
+		xaudioStage := xaudio.CurrentStage()
+		if xaudioStage != "" && xaudioStage != "idle" {
+			return xaudioStage
+		}
+	}
+
+	return stage
+}
+
+func initializationError() string {
+	runtimeInitialization.mu.Lock()
+	err := runtimeInitialization.err
+	runtimeInitialization.mu.Unlock()
+
+	return err
+}
+
+//export SimpleAudioRuntime_StartInitialize
+func SimpleAudioRuntime_StartInitialize(errorBuffer *C.char, errorBufferSize C.int) C.int {
+	if !startInitialize() {
+		copyMessage(errorBuffer, errorBufferSize, "SimpleAudio runtime is shutting down")
+		return 0
 	}
 
 	return 1
+}
+
+//export SimpleAudioRuntime_InitializationStatus
+func SimpleAudioRuntime_InitializationStatus() C.int {
+	return C.int(initializationStatus())
+}
+
+//export SimpleAudioRuntime_InitializationStage
+func SimpleAudioRuntime_InitializationStage(buffer *C.char, bufferSize C.int) C.int {
+	return copyMessage(buffer, bufferSize, initializationStage())
+}
+
+//export SimpleAudioRuntime_InitializationError
+func SimpleAudioRuntime_InitializationError(buffer *C.char, bufferSize C.int) C.int {
+	return copyMessage(buffer, bufferSize, initializationError())
 }
 
 //export SimpleAudioRuntime_Play
@@ -242,5 +392,27 @@ func SimpleAudioRuntime_PollEvent(eventType *C.int, playID *C.int, messageBuffer
 
 //export SimpleAudioRuntime_Shutdown
 func SimpleAudioRuntime_Shutdown() {
+	runtimeInitialization.mu.Lock()
+	status := runtimeInitialization.status
+	if status == runtimeStatusInitializing {
+		runtimeInitialization.status = runtimeStatusShuttingDown
+		runtimeInitialization.stage = "shutting_down"
+		runtimeInitialization.mu.Unlock()
+		return
+	}
+	if status == runtimeStatusShuttingDown {
+		runtimeInitialization.mu.Unlock()
+		return
+	}
+	runtimeInitialization.status = runtimeStatusShuttingDown
+	runtimeInitialization.stage = "shutting_down"
+	runtimeInitialization.mu.Unlock()
+
 	runtimePlayer.Shutdown()
+
+	runtimeInitialization.mu.Lock()
+	runtimeInitialization.status = runtimeStatusUninitialized
+	runtimeInitialization.stage = "uninitialized"
+	runtimeInitialization.err = ""
+	runtimeInitialization.mu.Unlock()
 }

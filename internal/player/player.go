@@ -61,18 +61,23 @@ func (player *Player) Start() error {
 		return nil
 	}
 
-	engine, err := xaudio.CreateEngine()
-	if err != nil {
+	commands := make(chan command, 64)
+	events := make(chan Event, 1024)
+	done := make(chan struct{})
+	started := make(chan error, 1)
+
+	go player.loop(commands, events, done, started)
+
+	if err := <-started; err != nil {
+		<-done
 		return err
 	}
 
-	player.commands = make(chan command, 64)
-	player.events = make(chan Event, 1024)
-	player.done = make(chan struct{})
+	player.commands = commands
+	player.events = events
+	player.done = done
 	player.active = map[int]struct{}{}
 	player.running = true
-
-	go player.loop(engine, player.commands, player.events, player.done)
 
 	return nil
 }
@@ -174,10 +179,9 @@ func (player *Player) IsPlaying(playID int) bool {
 func (player *Player) PollEvent() (Event, bool) {
 	player.mu.Lock()
 	events := player.events
-	running := player.running
 	player.mu.Unlock()
 
-	if !running || events == nil {
+	if events == nil {
 		return Event{}, false
 	}
 
@@ -192,6 +196,7 @@ func (player *Player) PollEvent() (Event, bool) {
 func (player *Player) Shutdown() {
 	player.mu.Lock()
 	if !player.running {
+		player.events = nil
 		player.mu.Unlock()
 		return
 	}
