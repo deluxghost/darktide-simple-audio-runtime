@@ -2,10 +2,12 @@ package main
 
 /*
 #include <stdint.h>
+#include <stdlib.h>
 */
 import "C"
 
 import (
+	"encoding/json"
 	"sync"
 	"unsafe"
 
@@ -273,6 +275,7 @@ func SimpleAudioRuntime_FileInfo(
 	channels *C.int,
 	duration *C.double,
 	bitRate *C.longlong,
+	tagsJSON **C.char,
 	errorBuffer *C.char,
 	errorBufferSize C.int,
 ) C.int {
@@ -280,12 +283,17 @@ func SimpleAudioRuntime_FileInfo(
 		copyMessage(errorBuffer, errorBufferSize, "Audio path is null")
 		return 0
 	}
-	if sampleRate == nil || channels == nil || duration == nil || bitRate == nil {
+	if sampleRate == nil || channels == nil || duration == nil || bitRate == nil || tagsJSON == nil {
 		copyMessage(errorBuffer, errorBufferSize, "Audio info output pointer is null")
 		return 0
 	}
+	*tagsJSON = nil
 
 	info, err := ffmpeg.ReadInfo(C.GoString(path))
+	if err != nil {
+		return fail(errorBuffer, errorBufferSize, err)
+	}
+	tags, err := json.Marshal(info.Tags)
 	if err != nil {
 		return fail(errorBuffer, errorBufferSize, err)
 	}
@@ -294,8 +302,16 @@ func SimpleAudioRuntime_FileInfo(
 	*channels = C.int(info.Channels)
 	*duration = C.double(info.Duration)
 	*bitRate = C.longlong(info.BitRate)
+	*tagsJSON = C.CString(string(tags))
 
 	return 1
+}
+
+//export SimpleAudioRuntime_FreeString
+func SimpleAudioRuntime_FreeString(value *C.char) {
+	if value != nil {
+		C.free(unsafe.Pointer(value))
+	}
 }
 
 //export SimpleAudioRuntime_SetPosition

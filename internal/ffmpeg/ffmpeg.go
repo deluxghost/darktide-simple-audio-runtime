@@ -22,6 +22,7 @@ type FileInfo struct {
 	Channels   int
 	Duration   float64
 	BitRate    int64
+	Tags       map[string]string
 }
 
 type Decoder struct {
@@ -78,6 +79,7 @@ func ReadInfo(path string) (FileInfo, error) {
 		Channels:   decoder.Channels(),
 		Duration:   decoder.Duration(),
 		BitRate:    decoder.BitRate(),
+		Tags:       decoder.Tags(),
 	}, nil
 }
 
@@ -137,6 +139,24 @@ func (decoder *Decoder) Duration() float64 {
 	}
 
 	return float64(C.sa_decoder_duration(decoder.ptr))
+}
+
+func (decoder *Decoder) Tags() map[string]string {
+	tags := make(map[string]string)
+	if decoder == nil || decoder.ptr == nil {
+		return tags
+	}
+
+	for index := 0; ; index++ {
+		var key *C.char
+		var value *C.char
+
+		if C.sa_decoder_tag(decoder.ptr, C.int(index), &key, &value) == 0 {
+			return tags
+		}
+
+		tags[C.GoString(key)] = C.GoString(value)
+	}
 }
 
 func (decoder *Decoder) Close() {

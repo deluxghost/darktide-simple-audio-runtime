@@ -146,6 +146,7 @@ int sa_ffmpeg_initialize(char* error, int error_size) {
 	SA_LOAD_SYMBOL(av_log_set_level, sa_av_log_set_level_fn, sa_ffmpeg.avutil, "av_log_set_level");
 	SA_LOAD_SYMBOL(av_strerror, sa_av_strerror_fn, sa_ffmpeg.avutil, "av_strerror");
 	SA_LOAD_SYMBOL(av_strdup, sa_av_strdup_fn, sa_ffmpeg.avutil, "av_strdup");
+	SA_LOAD_SYMBOL(av_dict_iterate, sa_av_dict_iterate_fn, sa_ffmpeg.avutil, "av_dict_iterate");
 	SA_LOAD_SYMBOL(av_get_sample_fmt_name, sa_av_get_sample_fmt_name_fn, sa_ffmpeg.avutil, "av_get_sample_fmt_name");
 	SA_LOAD_SYMBOL(av_channel_layout_default, sa_av_channel_layout_default_fn, sa_ffmpeg.avutil, "av_channel_layout_default");
 	SA_LOAD_SYMBOL(av_channel_layout_describe, sa_av_channel_layout_describe_fn, sa_ffmpeg.avutil, "av_channel_layout_describe");

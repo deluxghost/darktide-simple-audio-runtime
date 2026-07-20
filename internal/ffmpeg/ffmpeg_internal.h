@@ -32,6 +32,11 @@ typedef struct SA_AVIOContext SA_AVIOContext;
 typedef struct SA_SwrContext SA_SwrContext;
 
 typedef struct {
+	char* key;
+	char* value;
+} SA_AVDictionaryEntry;
+
+typedef struct {
 	int num;
 	int den;
 } SA_AVRational;
@@ -95,6 +100,28 @@ typedef struct {
 	int ctx_flags;
 	unsigned int nb_streams;
 	SA_AVStream** streams;
+	unsigned int nb_stream_groups;
+	void* stream_groups;
+	unsigned int nb_chapters;
+	void* chapters;
+	char* url;
+	int64_t start_time;
+	int64_t duration;
+	int64_t bit_rate;
+	unsigned int packet_size;
+	int max_delay;
+	int flags;
+	int64_t probesize;
+	int64_t max_analyze_duration;
+	const uint8_t* key;
+	int keylen;
+	unsigned int nb_programs;
+	void* programs;
+	int video_codec_id;
+	int audio_codec_id;
+	int subtitle_codec_id;
+	int data_codec_id;
+	SA_AVDictionary* metadata;
 } SA_AVFormatContext;
 
 typedef struct {
@@ -134,6 +161,7 @@ typedef struct SA_AVFilterInOut {
 typedef void (*sa_av_log_set_level_fn)(int level);
 typedef int (*sa_av_strerror_fn)(int errnum, char* errbuf, size_t errbuf_size);
 typedef char* (*sa_av_strdup_fn)(const char* s);
+typedef const SA_AVDictionaryEntry* (*sa_av_dict_iterate_fn)(const SA_AVDictionary* m, const SA_AVDictionaryEntry* prev);
 typedef const char* (*sa_av_get_sample_fmt_name_fn)(int sample_fmt);
 typedef void (*sa_av_channel_layout_default_fn)(SA_AVChannelLayout* ch_layout, int nb_channels);
 typedef int (*sa_av_channel_layout_describe_fn)(const SA_AVChannelLayout* channel_layout, char* buf, size_t buf_size);
@@ -179,6 +207,7 @@ typedef struct {
 	sa_av_log_set_level_fn av_log_set_level;
 	sa_av_strerror_fn av_strerror;
 	sa_av_strdup_fn av_strdup;
+	sa_av_dict_iterate_fn av_dict_iterate;
 	sa_av_get_sample_fmt_name_fn av_get_sample_fmt_name;
 	sa_av_channel_layout_default_fn av_channel_layout_default;
 	sa_av_channel_layout_describe_fn av_channel_layout_describe;

@@ -17,6 +17,7 @@ int sa_decoder_sample_rate(SA_Decoder* decoder);
 int sa_decoder_channels(SA_Decoder* decoder);
 int64_t sa_decoder_bit_rate(SA_Decoder* decoder);
 double sa_decoder_duration(SA_Decoder* decoder);
+int sa_decoder_tag(SA_Decoder* decoder, int index, const char** key, const char** value);
 
 #ifdef __cplusplus
 }

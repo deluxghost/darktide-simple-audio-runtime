@@ -417,3 +417,29 @@ double sa_decoder_duration(SA_Decoder* decoder) {
 
 	return (double)stream->duration * (double)stream->time_base.num / (double)stream->time_base.den;
 }
+
+int sa_decoder_tag(SA_Decoder* decoder, int index, const char** key, const char** value) {
+	if (key != NULL) {
+		*key = NULL;
+	}
+	if (value != NULL) {
+		*value = NULL;
+	}
+	if (decoder == NULL || decoder->format_context == NULL || decoder->format_context->metadata == NULL || index < 0 || key == NULL || value == NULL) {
+		return 0;
+	}
+
+	const SA_AVDictionaryEntry* entry = NULL;
+
+	for (int current_index = 0; current_index <= index; current_index++) {
+		entry = sa_ffmpeg.av_dict_iterate(decoder->format_context->metadata, entry);
+		if (entry == NULL) {
+			return 0;
+		}
+	}
+
+	*key = entry->key;
+	*value = entry->value;
+
+	return 1;
+}
