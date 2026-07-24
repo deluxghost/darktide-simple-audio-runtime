@@ -3,6 +3,7 @@ package player
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"darktide-simple-audio-runtime/internal/xaudio"
 )
@@ -10,6 +11,7 @@ import (
 const (
 	EventFinished = 1
 	EventError    = 2
+	EventStopped  = 3
 )
 
 type Vector = xaudio.Vector
@@ -106,7 +108,7 @@ func (player *Player) Play(path string, options Options) (int, error) {
 	return playID, nil
 }
 
-func (player *Player) Stop(playID int) bool {
+func (player *Player) Stop(playID int, fadeOut time.Duration) bool {
 	if playID <= 0 {
 		return false
 	}
@@ -118,9 +120,10 @@ func (player *Player) Stop(playID int) bool {
 
 	result := make(chan commandResult, 1)
 	commands <- command{
-		kind:   commandStop,
-		playID: playID,
-		result: result,
+		kind:    commandStop,
+		playID:  playID,
+		fadeOut: fadeOut,
+		result:  result,
 	}
 
 	response := <-result
@@ -150,7 +153,7 @@ func (player *Player) SetPosition(playID int, volumeGain float64, spatialData Sp
 	return response.ok, response.error
 }
 
-func (player *Player) StopAll() {
+func (player *Player) StopAll(fadeOut time.Duration) {
 	commands, ok := player.commandChannel()
 	if !ok {
 		return
@@ -158,8 +161,9 @@ func (player *Player) StopAll() {
 
 	result := make(chan commandResult, 1)
 	commands <- command{
-		kind:   commandStopAll,
-		result: result,
+		kind:    commandStopAll,
+		fadeOut: fadeOut,
+		result:  result,
 	}
 	<-result
 }

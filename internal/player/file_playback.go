@@ -42,6 +42,7 @@ type filePlayback struct {
 	pcmCapture      *pcmCapture
 	rawLease        *rawLease
 	remainingPlays  int64
+	fadeOut         *fadeOutState
 }
 
 func newFilePlayback(engine *xaudio.Engine, cache *audioCache, path string, options Options) (*filePlayback, error) {
@@ -461,8 +462,10 @@ func (activeFile *filePlayback) restartOrMarkEOF() error {
 }
 
 func (activeFile *filePlayback) applyOutput() error {
+	volumeGain := activeFile.outputGain()
+
 	if activeFile.options.Spatial {
-		return activeFile.voice.SetSpatial(activeFile.options.VolumeGain, xaudio.SpatialSettings{
+		return activeFile.voice.SetSpatial(volumeGain, xaudio.SpatialSettings{
 			SourcePosition:   activeFile.options.SourcePosition,
 			ListenerPosition: activeFile.options.ListenerPosition,
 			ListenerFront:    activeFile.options.ListenerFront,
@@ -470,7 +473,7 @@ func (activeFile *filePlayback) applyOutput() error {
 		})
 	}
 
-	return activeFile.voice.SetVolume(activeFile.options.VolumeGain)
+	return activeFile.voice.SetVolume(volumeGain)
 }
 
 func (activeFile *filePlayback) setPosition(volumeGain float64, spatialData SpatialData) error {

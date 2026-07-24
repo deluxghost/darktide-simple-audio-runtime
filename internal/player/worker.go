@@ -27,6 +27,7 @@ type command struct {
 	options     Options
 	volumeGain  float64
 	spatialData SpatialData
+	fadeOut     time.Duration
 	result      chan commandResult
 }
 
@@ -102,6 +103,11 @@ func (player *Player) loop(commands <-chan command, events chan Event, done chan
 			continue
 		}
 
+		player.updateFadeOuts(activeFiles, events, time.Now())
+		if len(activeFiles) == 0 {
+			continue
+		}
+
 		player.reclaimFilePlaybacks(activeFiles, events)
 		if len(activeFiles) == 0 {
 			continue
@@ -168,12 +174,27 @@ func (player *Player) handleCommand(cmd command, activeFiles map[int]*filePlayba
 			return false
 		}
 
+		if cmd.fadeOut > 0 {
+			activeFile.startFadeOut(time.Now(), cmd.fadeOut)
+			cmd.result <- commandResult{ok: true}
+			return false
+		}
+
 		activeFile.close()
 		delete(activeFiles, cmd.playID)
 		player.unmarkActive(cmd.playID)
 		cmd.result <- commandResult{ok: true}
 
 	case commandStopAll:
+		if cmd.fadeOut > 0 {
+			now := time.Now()
+			for _, activeFile := range activeFiles {
+				activeFile.startFadeOut(now, cmd.fadeOut)
+			}
+			cmd.result <- commandResult{ok: true}
+			return false
+		}
+
 		player.closeFilePlaybacks(activeFiles)
 		player.clearActive()
 		cmd.result <- commandResult{ok: true}
@@ -188,14 +209,37 @@ func (player *Player) handleCommand(cmd command, activeFiles map[int]*filePlayba
 	return false
 }
 
+func (player *Player) updateFadeOuts(activeFiles map[int]*filePlayback, events chan Event, now time.Time) {
+	for playID, activeFile := range activeFiles {
+		finished, err := activeFile.updateFadeOut(now)
+		if err != nil {
+			activeFile.close()
+			delete(activeFiles, playID)
+			player.unmarkActive(playID)
+			player.pushEvent(events, Event{Type: EventError, PlayID: playID, Message: err.Error()})
+			continue
+		}
+		if finished {
+			activeFile.close()
+			delete(activeFiles, playID)
+			player.unmarkActive(playID)
+			player.pushEvent(events, Event{Type: EventStopped, PlayID: playID})
+		}
+	}
+}
+
 func (player *Player) reclaimFilePlaybacks(activeFiles map[int]*filePlayback, events chan Event) {
 	for playID, activeFile := range activeFiles {
 		activeFile.reclaimSubmittedBuffers()
 		if activeFile.eof && len(activeFile.buffers) == 0 {
+			eventType := EventFinished
+			if activeFile.stopping() {
+				eventType = EventStopped
+			}
 			activeFile.close()
 			delete(activeFiles, playID)
 			player.unmarkActive(playID)
-			player.pushEvent(events, Event{Type: EventFinished, PlayID: playID})
+			player.pushEvent(events, Event{Type: eventType, PlayID: playID})
 		}
 	}
 }

@@ -8,7 +8,10 @@ import "C"
 
 import (
 	"encoding/json"
+	"errors"
+	"math"
 	"sync"
+	"time"
 	"unsafe"
 
 	"darktide-simple-audio-runtime/internal/ffmpeg"
@@ -358,9 +361,33 @@ func runtimeVector(x C.double, y C.double, z C.double) player.Vector {
 	}
 }
 
+func runtimeFadeOutDuration(value C.double) (time.Duration, error) {
+	seconds := float64(value)
+	if math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds < 0 {
+		return 0, errors.New("Fade-out duration must be finite and non-negative")
+	}
+
+	nanoseconds := seconds * float64(time.Second)
+	if nanoseconds >= float64(1<<63) {
+		return 0, errors.New("Fade-out duration is too large")
+	}
+
+	duration := time.Duration(nanoseconds)
+	if seconds > 0 && duration == 0 {
+		duration = time.Nanosecond
+	}
+
+	return duration, nil
+}
+
 //export SimpleAudioRuntime_Stop
-func SimpleAudioRuntime_Stop(playID C.int) C.int {
-	if runtimePlayer.Stop(int(playID)) {
+func SimpleAudioRuntime_Stop(playID C.int, fadeOut C.double, errorBuffer *C.char, errorBufferSize C.int) C.int {
+	duration, err := runtimeFadeOutDuration(fadeOut)
+	if err != nil {
+		return fail(errorBuffer, errorBufferSize, err)
+	}
+
+	if runtimePlayer.Stop(int(playID), duration) {
 		return 1
 	}
 
@@ -368,8 +395,14 @@ func SimpleAudioRuntime_Stop(playID C.int) C.int {
 }
 
 //export SimpleAudioRuntime_StopAll
-func SimpleAudioRuntime_StopAll() {
-	runtimePlayer.StopAll()
+func SimpleAudioRuntime_StopAll(fadeOut C.double, errorBuffer *C.char, errorBufferSize C.int) C.int {
+	duration, err := runtimeFadeOutDuration(fadeOut)
+	if err != nil {
+		return fail(errorBuffer, errorBufferSize, err)
+	}
+
+	runtimePlayer.StopAll(duration)
+	return 1
 }
 
 //export SimpleAudioRuntime_IsPlaying
