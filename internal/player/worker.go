@@ -60,97 +60,85 @@ func (player *Player) loop(commands <-chan command, events chan Event, done chan
 		}
 	}()
 
+	cache := newAudioCache()
+	defer cache.close()
+
 	activeFiles := map[int]*filePlayback{}
+	ticker := time.NewTicker(updateInterval)
+	defer ticker.Stop()
 
 	for {
 		if len(activeFiles) == 0 {
 			cmd := <-commands
-			if cmd.kind == commandPlay {
-				engine, err = player.recoverCriticalError(engine, activeFiles, events)
-				if err != nil {
-					if cmd.result != nil {
-						cmd.result <- commandResult{error: err}
-					}
-					continue
-				}
-			}
-
-			if player.handleCommand(cmd, activeFiles, engine) {
+			var shutdown bool
+			engine, shutdown = player.processCommand(cmd, activeFiles, engine, cache, events)
+			if shutdown {
 				return
 			}
-
 			continue
+		}
+
+		maintenanceDue := false
+		select {
+		case <-ticker.C:
+			maintenanceDue = true
+		default:
+		}
+		if !maintenanceDue {
+			select {
+			case cmd := <-commands:
+				var shutdown bool
+				engine, shutdown = player.processCommand(cmd, activeFiles, engine, cache, events)
+				if shutdown {
+					return
+				}
+				continue
+			case <-ticker.C:
+			}
 		}
 
 		engine, err = player.recoverCriticalError(engine, activeFiles, events)
-		if err != nil {
+		if err != nil || len(activeFiles) == 0 {
 			continue
 		}
 
+		player.reclaimFilePlaybacks(activeFiles, events)
 		if len(activeFiles) == 0 {
 			continue
 		}
 
-		var exit bool
-		engine, exit = player.drainCommands(commands, activeFiles, engine, events)
-		if exit {
-			return
-		}
-
-		if len(activeFiles) == 0 {
-			continue
-		}
-
-		player.updateFilePlaybacks(activeFiles, events)
-
-		select {
-		case cmd := <-commands:
-			if cmd.kind != commandShutdown {
-				engine, err = player.recoverCriticalError(engine, activeFiles, events)
-				if err != nil {
-					if cmd.result != nil {
-						cmd.result <- commandResult{error: err}
-					}
-					continue
-				}
-			}
-
-			if player.handleCommand(cmd, activeFiles, engine) {
+		for target := 1; target <= targetQueuedBuffers; target++ {
+			var shutdown bool
+			engine, shutdown = player.refillFilePlaybacks(commands, activeFiles, target, engine, cache, events)
+			if shutdown {
 				return
 			}
-		case <-time.After(updateInterval):
+			if len(activeFiles) == 0 {
+				break
+			}
 		}
 	}
 }
 
-func (player *Player) drainCommands(commands <-chan command, activeFiles map[int]*filePlayback, engine *xaudio.Engine, events chan Event) (*xaudio.Engine, bool) {
-	for {
-		select {
-		case cmd := <-commands:
-			if cmd.kind != commandShutdown {
-				var err error
-				engine, err = player.recoverCriticalError(engine, activeFiles, events)
-				if err != nil {
-					if cmd.result != nil {
-						cmd.result <- commandResult{error: err}
-					}
-					return engine, false
-				}
+func (player *Player) processCommand(cmd command, activeFiles map[int]*filePlayback, engine *xaudio.Engine, cache *audioCache, events chan Event) (*xaudio.Engine, bool) {
+	if cmd.kind != commandShutdown && (cmd.kind == commandPlay || len(activeFiles) > 0) {
+		var err error
+		engine, err = player.recoverCriticalError(engine, activeFiles, events)
+		if err != nil {
+			if cmd.result != nil {
+				cmd.result <- commandResult{error: err}
 			}
-
-			if player.handleCommand(cmd, activeFiles, engine) {
-				return engine, true
-			}
-		default:
 			return engine, false
 		}
 	}
+
+	return engine, player.handleCommand(cmd, activeFiles, engine, cache)
 }
 
-func (player *Player) handleCommand(cmd command, activeFiles map[int]*filePlayback, engine *xaudio.Engine) bool {
+func (player *Player) handleCommand(cmd command, activeFiles map[int]*filePlayback, engine *xaudio.Engine, cache *audioCache) bool {
 	switch cmd.kind {
 	case commandPlay:
-		activeFile, err := newFilePlayback(engine, cmd.path, cmd.options)
+		activeFile, err := newFilePlayback(engine, cache, cmd.path, cmd.options)
 		if err != nil {
 			cmd.result <- commandResult{error: err}
 			return false
@@ -200,18 +188,9 @@ func (player *Player) handleCommand(cmd command, activeFiles map[int]*filePlayba
 	return false
 }
 
-func (player *Player) updateFilePlaybacks(activeFiles map[int]*filePlayback, events chan Event) {
+func (player *Player) reclaimFilePlaybacks(activeFiles map[int]*filePlayback, events chan Event) {
 	for playID, activeFile := range activeFiles {
 		activeFile.reclaimSubmittedBuffers()
-
-		if err := activeFile.fillQueue(); err != nil {
-			player.pushEvent(events, Event{Type: EventError, PlayID: playID, Message: err.Error()})
-			activeFile.close()
-			delete(activeFiles, playID)
-			player.unmarkActive(playID)
-			continue
-		}
-
 		if activeFile.eof && len(activeFile.buffers) == 0 {
 			activeFile.close()
 			delete(activeFiles, playID)
@@ -219,6 +198,28 @@ func (player *Player) updateFilePlaybacks(activeFiles map[int]*filePlayback, eve
 			player.pushEvent(events, Event{Type: EventFinished, PlayID: playID})
 		}
 	}
+}
+
+func (player *Player) refillFilePlaybacks(commands <-chan command, activeFiles map[int]*filePlayback, target int, engine *xaudio.Engine, cache *audioCache, events chan Event) (*xaudio.Engine, bool) {
+	for playID, activeFile := range activeFiles {
+		if err := activeFile.fillTo(target); err != nil {
+			player.pushEvent(events, Event{Type: EventError, PlayID: playID, Message: err.Error()})
+			activeFile.close()
+			delete(activeFiles, playID)
+			player.unmarkActive(playID)
+		}
+
+		select {
+		case cmd := <-commands:
+			var shutdown bool
+			engine, shutdown = player.processCommand(cmd, activeFiles, engine, cache, events)
+			if shutdown {
+				return engine, true
+			}
+		default:
+		}
+	}
+	return engine, false
 }
 
 func (player *Player) recoverCriticalError(engine *xaudio.Engine, activeFiles map[int]*filePlayback, events chan Event) (*xaudio.Engine, error) {

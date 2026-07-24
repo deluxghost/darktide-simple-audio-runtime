@@ -13,6 +13,7 @@
 #define SA_BYTES_PER_SAMPLE 2
 #define SA_AVMEDIA_TYPE_AUDIO 1
 #define SA_AV_SAMPLE_FMT_S16 1
+#define SA_AV_CHANNEL_ORDER_UNSPEC 0
 #define SA_AV_LOG_QUIET -8
 #define SA_AV_NOPTS_VALUE ((int64_t)0x8000000000000000ULL)
 #define SA_AVERROR_EOF -541478725
@@ -30,6 +31,11 @@ typedef struct SA_AVFilterGraph SA_AVFilterGraph;
 typedef struct SA_AVInputFormat SA_AVInputFormat;
 typedef struct SA_AVIOContext SA_AVIOContext;
 typedef struct SA_SwrContext SA_SwrContext;
+
+typedef struct {
+	int (*callback)(void*);
+	void* opaque;
+} SA_AVIOInterruptCB;
 
 typedef struct {
 	char* key;
@@ -122,6 +128,10 @@ typedef struct {
 	int subtitle_codec_id;
 	int data_codec_id;
 	SA_AVDictionary* metadata;
+	int64_t start_time_realtime;
+	int fps_probe_size;
+	int error_recognition;
+	SA_AVIOInterruptCB interrupt_callback;
 } SA_AVFormatContext;
 
 typedef struct {
@@ -163,8 +173,10 @@ typedef int (*sa_av_strerror_fn)(int errnum, char* errbuf, size_t errbuf_size);
 typedef char* (*sa_av_strdup_fn)(const char* s);
 typedef const SA_AVDictionaryEntry* (*sa_av_dict_iterate_fn)(const SA_AVDictionary* m, const SA_AVDictionaryEntry* prev);
 typedef const char* (*sa_av_get_sample_fmt_name_fn)(int sample_fmt);
+typedef int (*sa_av_get_bytes_per_sample_fn)(int sample_fmt);
 typedef void (*sa_av_channel_layout_default_fn)(SA_AVChannelLayout* ch_layout, int nb_channels);
 typedef int (*sa_av_channel_layout_describe_fn)(const SA_AVChannelLayout* channel_layout, char* buf, size_t buf_size);
+typedef SA_AVFormatContext* (*sa_avformat_alloc_context_fn)(void);
 typedef int (*sa_avformat_open_input_fn)(SA_AVFormatContext** ps, const char* url, const SA_AVInputFormat* fmt, SA_AVDictionary** options);
 typedef int (*sa_avformat_find_stream_info_fn)(SA_AVFormatContext* ic, SA_AVDictionary** options);
 typedef int (*sa_av_find_best_stream_fn)(SA_AVFormatContext* ic, int type, int wanted_stream_nb, int related_stream, const SA_AVCodec** decoder_ret, int flags);
@@ -176,12 +188,17 @@ typedef int (*sa_avcodec_open2_fn)(SA_AVCodecContext* avctx, const SA_AVCodec* c
 typedef int (*sa_avcodec_send_packet_fn)(SA_AVCodecContext* avctx, const SA_AVPacket* avpkt);
 typedef int (*sa_avcodec_receive_frame_fn)(SA_AVCodecContext* avctx, SA_AVFrame* frame);
 typedef void (*sa_avcodec_free_context_fn)(SA_AVCodecContext** avctx);
+typedef SA_AVCodecParameters* (*sa_avcodec_parameters_alloc_fn)(void);
+typedef int (*sa_avcodec_parameters_copy_fn)(SA_AVCodecParameters* dst, const SA_AVCodecParameters* src);
+typedef void (*sa_avcodec_parameters_free_fn)(SA_AVCodecParameters** par);
 typedef SA_AVPacket* (*sa_av_packet_alloc_fn)(void);
 typedef void (*sa_av_packet_free_fn)(SA_AVPacket** pkt);
 typedef void (*sa_av_packet_unref_fn)(SA_AVPacket* pkt);
 typedef SA_AVFrame* (*sa_av_frame_alloc_fn)(void);
 typedef void (*sa_av_frame_free_fn)(SA_AVFrame** frame);
 typedef void (*sa_av_frame_unref_fn)(SA_AVFrame* frame);
+typedef SA_AVFrame* (*sa_av_frame_clone_fn)(const SA_AVFrame* frame);
+typedef int (*sa_av_samples_get_buffer_size_fn)(int* linesize, int nb_channels, int nb_samples, int sample_fmt, int align);
 typedef int (*sa_swr_alloc_set_opts2_fn)(SA_SwrContext** ps, const SA_AVChannelLayout* out_ch_layout, int out_sample_fmt, int out_sample_rate, const SA_AVChannelLayout* in_ch_layout, int in_sample_fmt, int in_sample_rate, int log_offset, void* log_ctx);
 typedef int (*sa_swr_init_fn)(SA_SwrContext* s);
 typedef int (*sa_swr_convert_fn)(SA_SwrContext* s, uint8_t** out, int out_count, const uint8_t** in, int in_count);
@@ -209,8 +226,10 @@ typedef struct {
 	sa_av_strdup_fn av_strdup;
 	sa_av_dict_iterate_fn av_dict_iterate;
 	sa_av_get_sample_fmt_name_fn av_get_sample_fmt_name;
+	sa_av_get_bytes_per_sample_fn av_get_bytes_per_sample;
 	sa_av_channel_layout_default_fn av_channel_layout_default;
 	sa_av_channel_layout_describe_fn av_channel_layout_describe;
+	sa_avformat_alloc_context_fn avformat_alloc_context;
 	sa_avformat_open_input_fn avformat_open_input;
 	sa_avformat_find_stream_info_fn avformat_find_stream_info;
 	sa_av_find_best_stream_fn av_find_best_stream;
@@ -222,12 +241,17 @@ typedef struct {
 	sa_avcodec_send_packet_fn avcodec_send_packet;
 	sa_avcodec_receive_frame_fn avcodec_receive_frame;
 	sa_avcodec_free_context_fn avcodec_free_context;
+	sa_avcodec_parameters_alloc_fn avcodec_parameters_alloc;
+	sa_avcodec_parameters_copy_fn avcodec_parameters_copy;
+	sa_avcodec_parameters_free_fn avcodec_parameters_free;
 	sa_av_packet_alloc_fn av_packet_alloc;
 	sa_av_packet_free_fn av_packet_free;
 	sa_av_packet_unref_fn av_packet_unref;
 	sa_av_frame_alloc_fn av_frame_alloc;
 	sa_av_frame_free_fn av_frame_free;
 	sa_av_frame_unref_fn av_frame_unref;
+	sa_av_frame_clone_fn av_frame_clone;
+	sa_av_samples_get_buffer_size_fn av_samples_get_buffer_size;
 	sa_swr_alloc_set_opts2_fn swr_alloc_set_opts2;
 	sa_swr_init_fn swr_init;
 	sa_swr_convert_fn swr_convert;
@@ -269,8 +293,31 @@ struct SA_Decoder {
 	int stream_index;
 	int output_sample_rate;
 	int output_channels;
+	SA_CancelToken* cancel_token;
+	int packet_pending;
+	int input_eof;
 	int sent_flush;
 	int finished;
+};
+
+struct SA_RawAudio {
+	SA_AVCodecParameters* codec_parameters;
+	SA_AVFrame** frames;
+	int frame_count;
+	int frame_capacity;
+	int byte_count;
+};
+
+struct SA_RawFilterDecoder {
+	SA_RawAudio* audio;
+	SA_Decoder filter_state;
+	SA_CancelToken* cancel_token;
+	int frame_index;
+	int finished;
+};
+
+struct SA_CancelToken {
+	volatile LONG cancelled;
 };
 
 extern SA_FFmpeg sa_ffmpeg;
@@ -283,5 +330,7 @@ void sa_filter_graph_free(SA_FilterGraph* filter_graph);
 int sa_filter_drain(SA_FilterGraph* filter_graph, int16_t* out, int max_frames, int* written, char* error, int error_size);
 int sa_filter_flush(SA_FilterGraph* filter_graph, int16_t* out, int max_frames, int* written, char* error, int error_size);
 int sa_filter_graph_create(SA_Decoder* decoder, int input_sample_format, char* error, int error_size);
+int sa_decoder_next_frame(SA_Decoder* decoder, int* finished, char* error, int error_size);
+int sa_cancel_token_is_cancelled(SA_CancelToken* token);
 
 #endif

@@ -148,8 +148,10 @@ int sa_ffmpeg_initialize(char* error, int error_size) {
 	SA_LOAD_SYMBOL(av_strdup, sa_av_strdup_fn, sa_ffmpeg.avutil, "av_strdup");
 	SA_LOAD_SYMBOL(av_dict_iterate, sa_av_dict_iterate_fn, sa_ffmpeg.avutil, "av_dict_iterate");
 	SA_LOAD_SYMBOL(av_get_sample_fmt_name, sa_av_get_sample_fmt_name_fn, sa_ffmpeg.avutil, "av_get_sample_fmt_name");
+	SA_LOAD_SYMBOL(av_get_bytes_per_sample, sa_av_get_bytes_per_sample_fn, sa_ffmpeg.avutil, "av_get_bytes_per_sample");
 	SA_LOAD_SYMBOL(av_channel_layout_default, sa_av_channel_layout_default_fn, sa_ffmpeg.avutil, "av_channel_layout_default");
 	SA_LOAD_SYMBOL(av_channel_layout_describe, sa_av_channel_layout_describe_fn, sa_ffmpeg.avutil, "av_channel_layout_describe");
+	SA_LOAD_SYMBOL(avformat_alloc_context, sa_avformat_alloc_context_fn, sa_ffmpeg.avformat, "avformat_alloc_context");
 	SA_LOAD_SYMBOL(avformat_open_input, sa_avformat_open_input_fn, sa_ffmpeg.avformat, "avformat_open_input");
 	SA_LOAD_SYMBOL(avformat_find_stream_info, sa_avformat_find_stream_info_fn, sa_ffmpeg.avformat, "avformat_find_stream_info");
 	SA_LOAD_SYMBOL(av_find_best_stream, sa_av_find_best_stream_fn, sa_ffmpeg.avformat, "av_find_best_stream");
@@ -161,12 +163,17 @@ int sa_ffmpeg_initialize(char* error, int error_size) {
 	SA_LOAD_SYMBOL(avcodec_send_packet, sa_avcodec_send_packet_fn, sa_ffmpeg.avcodec, "avcodec_send_packet");
 	SA_LOAD_SYMBOL(avcodec_receive_frame, sa_avcodec_receive_frame_fn, sa_ffmpeg.avcodec, "avcodec_receive_frame");
 	SA_LOAD_SYMBOL(avcodec_free_context, sa_avcodec_free_context_fn, sa_ffmpeg.avcodec, "avcodec_free_context");
+	SA_LOAD_SYMBOL(avcodec_parameters_alloc, sa_avcodec_parameters_alloc_fn, sa_ffmpeg.avcodec, "avcodec_parameters_alloc");
+	SA_LOAD_SYMBOL(avcodec_parameters_copy, sa_avcodec_parameters_copy_fn, sa_ffmpeg.avcodec, "avcodec_parameters_copy");
+	SA_LOAD_SYMBOL(avcodec_parameters_free, sa_avcodec_parameters_free_fn, sa_ffmpeg.avcodec, "avcodec_parameters_free");
 	SA_LOAD_SYMBOL(av_packet_alloc, sa_av_packet_alloc_fn, sa_ffmpeg.avcodec, "av_packet_alloc");
 	SA_LOAD_SYMBOL(av_packet_free, sa_av_packet_free_fn, sa_ffmpeg.avcodec, "av_packet_free");
 	SA_LOAD_SYMBOL(av_packet_unref, sa_av_packet_unref_fn, sa_ffmpeg.avcodec, "av_packet_unref");
 	SA_LOAD_SYMBOL(av_frame_alloc, sa_av_frame_alloc_fn, sa_ffmpeg.avutil, "av_frame_alloc");
 	SA_LOAD_SYMBOL(av_frame_free, sa_av_frame_free_fn, sa_ffmpeg.avutil, "av_frame_free");
 	SA_LOAD_SYMBOL(av_frame_unref, sa_av_frame_unref_fn, sa_ffmpeg.avutil, "av_frame_unref");
+	SA_LOAD_SYMBOL(av_frame_clone, sa_av_frame_clone_fn, sa_ffmpeg.avutil, "av_frame_clone");
+	SA_LOAD_SYMBOL(av_samples_get_buffer_size, sa_av_samples_get_buffer_size_fn, sa_ffmpeg.avutil, "av_samples_get_buffer_size");
 	SA_LOAD_SYMBOL(swr_alloc_set_opts2, sa_swr_alloc_set_opts2_fn, sa_ffmpeg.swresample, "swr_alloc_set_opts2");
 	SA_LOAD_SYMBOL(swr_init, sa_swr_init_fn, sa_ffmpeg.swresample, "swr_init");
 	SA_LOAD_SYMBOL(swr_convert, sa_swr_convert_fn, sa_ffmpeg.swresample, "swr_convert");
@@ -189,7 +196,7 @@ int sa_ffmpeg_initialize(char* error, int error_size) {
 }
 
 const char* sa_ffmpeg_error(int code) {
-	static char buffer[256];
+	static _Thread_local char buffer[256];
 
 	if (sa_ffmpeg.av_strerror != NULL && sa_ffmpeg.av_strerror(code, buffer, sizeof(buffer)) == 0) {
 		return buffer;

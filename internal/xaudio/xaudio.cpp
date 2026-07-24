@@ -359,7 +359,7 @@ int sa_xaudio_voice_create(SA_XAudioEngine* engine, int sample_rate, int channel
 	return 1;
 }
 
-int sa_xaudio_voice_submit(SA_XAudioVoice* voice, void* data, int byte_count, char* error, int error_size) {
+int sa_xaudio_voice_submit_loop(SA_XAudioVoice* voice, void* data, int byte_count, int loop_count, int end_of_stream, char* error, int error_size) {
 	if (voice == NULL || voice->source_voice == NULL) {
 		sa_xaudio_set_error(error, error_size, "XAudio2 voice is not initialized");
 		return 0;
@@ -368,15 +368,36 @@ int sa_xaudio_voice_submit(SA_XAudioVoice* voice, void* data, int byte_count, ch
 		sa_xaudio_set_error(error, error_size, "Invalid XAudio2 buffer");
 		return 0;
 	}
+	if (loop_count < -1 || loop_count > XAUDIO2_MAX_LOOP_COUNT) {
+		sa_xaudio_set_error(error, error_size, "XAudio2 loop count is out of range");
+		return 0;
+	}
 
 	XAUDIO2_BUFFER buffer;
 	memset(&buffer, 0, sizeof(buffer));
 	buffer.AudioBytes = (UINT32)byte_count;
 	buffer.pAudioData = (const BYTE*)data;
+	buffer.LoopCount = loop_count < 0 ? XAUDIO2_LOOP_INFINITE : (UINT32)loop_count;
+	buffer.Flags = end_of_stream ? XAUDIO2_END_OF_STREAM : 0;
 
 	HRESULT result = voice->source_voice->SubmitSourceBuffer(&buffer);
 	if (FAILED(result)) {
 		sa_xaudio_hresult_error(error, error_size, "SubmitSourceBuffer", result);
+		return 0;
+	}
+
+	return 1;
+}
+
+int sa_xaudio_voice_discontinuity(SA_XAudioVoice* voice, char* error, int error_size) {
+	if (voice == NULL || voice->source_voice == NULL) {
+		sa_xaudio_set_error(error, error_size, "XAudio2 voice is not initialized");
+		return 0;
+	}
+
+	HRESULT result = voice->source_voice->Discontinuity();
+	if (FAILED(result)) {
+		sa_xaudio_hresult_error(error, error_size, "Discontinuity", result);
 		return 0;
 	}
 

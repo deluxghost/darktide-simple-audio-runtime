@@ -5,6 +5,7 @@ package xaudio
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct SA_XAudioEngine SA_XAudioEngine;
 typedef struct SA_XAudioVoice SA_XAudioVoice;
@@ -21,7 +22,8 @@ void sa_xaudio_thread_uninitialize(void);
 int sa_xaudio_engine_critical_error(SA_XAudioEngine* engine, char* error, int error_size);
 const char* sa_xaudio_current_stage(void);
 int sa_xaudio_voice_create(SA_XAudioEngine* engine, int sample_rate, int channels, SA_XAudioVoice** out, char* error, int error_size);
-int sa_xaudio_voice_submit(SA_XAudioVoice* voice, void* data, int byte_count, char* error, int error_size);
+int sa_xaudio_voice_submit_loop(SA_XAudioVoice* voice, void* data, int byte_count, int loop_count, int end_of_stream, char* error, int error_size);
+int sa_xaudio_voice_discontinuity(SA_XAudioVoice* voice, char* error, int error_size);
 int sa_xaudio_voice_set_volume(SA_XAudioVoice* voice, float volume, char* error, int error_size);
 int sa_xaudio_voice_set_spatial(SA_XAudioVoice* voice, float volume, SA_XAudioVector source_position, SA_XAudioVector listener_position, SA_XAudioVector listener_front, SA_XAudioVector listener_top, char* error, int error_size);
 int sa_xaudio_voice_queued(SA_XAudioVoice* voice);
@@ -143,14 +145,34 @@ func (engine *Engine) CriticalError() error {
 	return errors.New(errorString(&errbuf[0]))
 }
 
-func (voice *Voice) Submit(buffer unsafe.Pointer, byteCount int) error {
+func (voice *Voice) Submit(buffer unsafe.Pointer, byteCount int, endOfStream bool) error {
+	return voice.SubmitLoop(buffer, byteCount, 0, endOfStream)
+}
+
+func (voice *Voice) SubmitLoop(buffer unsafe.Pointer, byteCount int, loopCount int, endOfStream bool) error {
 	if voice == nil || voice.ptr == nil {
 		return errors.New("XAudio2 voice is not initialized")
 	}
 
 	var errbuf [512]C.char
+	cEndOfStream := C.int(0)
+	if endOfStream {
+		cEndOfStream = 1
+	}
+	if C.sa_xaudio_voice_submit_loop(voice.ptr, buffer, C.int(byteCount), C.int(loopCount), cEndOfStream, &errbuf[0], C.int(len(errbuf))) == 0 {
+		return errors.New(errorString(&errbuf[0]))
+	}
 
-	if C.sa_xaudio_voice_submit(voice.ptr, buffer, C.int(byteCount), &errbuf[0], C.int(len(errbuf))) == 0 {
+	return nil
+}
+
+func (voice *Voice) Discontinuity() error {
+	if voice == nil || voice.ptr == nil {
+		return errors.New("XAudio2 voice is not initialized")
+	}
+
+	var errbuf [512]C.char
+	if C.sa_xaudio_voice_discontinuity(voice.ptr, &errbuf[0], C.int(len(errbuf))) == 0 {
 		return errors.New(errorString(&errbuf[0]))
 	}
 
@@ -221,6 +243,14 @@ func (voice *Voice) Destroy() {
 
 func Alloc(byteCount int) unsafe.Pointer {
 	return C.malloc(C.size_t(byteCount))
+}
+
+func Realloc(buffer unsafe.Pointer, byteCount int) unsafe.Pointer {
+	return C.realloc(buffer, C.size_t(byteCount))
+}
+
+func Copy(destination unsafe.Pointer, source unsafe.Pointer, byteCount int) {
+	C.memcpy(destination, source, C.size_t(byteCount))
 }
 
 func Free(buffer unsafe.Pointer) {
